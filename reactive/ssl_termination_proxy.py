@@ -16,103 +16,80 @@
 import os
 from subprocess import check_call
 
-from charmhelpers.core import hookenv
+from charmhelpers.core import hookenv, unitdata
 from charmhelpers.core.hookenv import status_set
 
 from charms.reactive import when, when_not, set_state, remove_state
 
 from charms.layer import lets_encrypt  # pylint:disable=E0611,E0401
-from charms.layer.nginx import configure_site  # pylint:disable=E0611,E0401
+from charms.layer.nginx import configure_site
 
 
+db = unitdata.kv()
 config = hookenv.config()
 
 
-@when(
-    'apt.installed.apache2-utils')
-@when_not(
-    'ssl-termination-proxy.installed')
+@when('apt.installed.apache2-utils')
+@when_not('ssl-termination-proxy.installed')
 def install():
     set_state('ssl-termination-proxy.installed')
 
 
-@when(
-    'ssl-termination-proxy.installed')
-@when_not(
-    'lets-encrypt.registered')
-def signal_need_fqdn():
-    # This check is here to make sure we don't overwrite the "register cert failed" message
-    if not config['fqdn']:
-        status_set('blocked', 'Please fill in fqdn for ssl certificate.')
-
-
-@when(
-    'ssl-termination-proxy.installed',
-    'lets-encrypt.registered')
-@when_not(
-    'reverseproxy.available')
+@when('ssl-termination-proxy.installed')
+@when_not('ssltermination.available')
 def signal_need_webservice():
-    status_set(
-        'blocked',
-        'Please relate an HTTP webservice (registered {})'.format(config['fqdn']))
+    status_set('blocked', 'Please relate a SSL Termination client')
 
 
-@when(
-    'ssl-termination-proxy.running',
-    'config.changed.credentials')
-def configure_basic_auth():
-    print('Credentials changed, re-triggering setup.')
-    remove_state('ssl-termination-proxy.running')
-    # To make sure we don't trigger an infinite loop.
-    remove_state('config.changed.credentials')
+@when('ssltermination.connected')
+@when_not('ssltermination.available')
+def check_status(ssltermination):
+    ssltermination.check_status()
 
 
-@when(
-    'ssl-termination-proxy.installed',
-    'lets-encrypt.registered',
-    'reverseproxy.available')
-@when_not(
-    'ssl-termination-proxy.running')
-def set_up(reverseproxy):
-    print('Http relation found, configuring proxy.')
-    credentials = config.get('credentials', '').split()
-    # Did we get a valid value? If not, blocked!
-    if len(credentials) not in (0, 2):
-        status_set(
-            'blocked',
-            'authentication config wrong! '
-            'I expect 2 space-separated strings. I got {}.'.format(len(credentials)))
-        return
-    # We got a valid value, signal to regenerate config.
+@when('ssl-termination-proxy.installed', 'ssltermination.available')
+@when_not('lets-encrypt.registered')
+def setup_fqdns(ssltermination):
+    data = ssltermination.get_data()[0]
+    fqdns = db.get('fqdns')
+    if fqdns is None:
+        db.set('fqdns', data['fqdns'])
+    else:
+        db.set('fqdns', list(set(fqdns) | set(data['fqdns'])))
+    lets_encrypt.update_fqdns()
+
+
+@when('ssl-termination-proxy.installed', 'ssltermination.available', 'lets-encrypt.registered')
+def set_up(ssltermination):
+    print('SSL termination relation found, configuring proxy.')
+    data = ssltermination.get_data()[0]
+    service = data['service']
     try:
-        os.remove('/etc/nginx/.htpasswd')
+        os.remove('/etc/nginx/.htpasswd/{}'.format(service))
     except OSError:
         pass
     # Did we get credentials? If so, configure them.
-    if len(credentials) == 2:
+    for user in data['basic_auth']:
         check_call([
-            'htpasswd', '-c', '-b', '/etc/nginx/.htpasswd',
-            credentials[0], credentials[1]])
-    services = reverseproxy.services()
-    live = lets_encrypt.live()
-    template = 'encrypt.nginx.jinja2'
+            'htpasswd', '-b', '/etc/nginx/.htpasswd/{}'.format(service),
+            user['name'], user['password']])
+    live = lets_encrypt.live(data['fqdns'])
     configure_site(
-        'default', template,
+        'serivce.conf', '{}.conf'.format(service),
         privkey=live['privkey'],
         fullchain=live['fullchain'],
-        fqdn=config['fqdn'].rstrip(),
-        hostname=services[0]['hosts'][0]['hostname'],
-        port=services[0]['hosts'][0]['port'],
+        loadbalancing=data['loadbalancing'],
+        service=service,
+        servers=data['private_ips'],
+        fqdns=data['fqdns'],
         dhparam=live['dhparam'],
-        auth_basic=bool(config['credentials']))
+        auth_basic=bool(data['basic_auth']))
     set_state('ssl-termination-proxy.running')
-    status_set('active', 'Ready (https://{})'.format(config['fqdn'].rstrip()))
+    status_set('active', '{} have been registered and are online'.format(', '.join(data['fqdns'])))
 
 
-@when(
-    'ssl-termination-proxy.running')
-@when_not(
-    'reverseproxy.available')
-def stop_nginx():
-    print('Reverseproxy relation broken')
-    remove_state('ssl-termination-proxy.running')
+@when('ssl-termination-proxy.running', 'ssltermination.removed')
+def remove_fqdns(ssltermination):
+    data = ssltermination.get_data()[0]
+    db.set('fqdns', list(set(db.get('fqdns')) - set(data['fqdns'])))
+    lets_encrypt.update_fqdns()

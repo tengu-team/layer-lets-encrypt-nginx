@@ -5,5 +5,5 @@ options:
     packages:
       - apache2-utils
 
-includes: ['layer:basic', 'layer:nginx', 'layer:lets-encrypt', 'interface:http']
+includes: ['layer:basic', 'layer:nginx', 'layer:lets-encrypt', 'interface:ssl-termination']
 repo: git@github.com:tengu-team/layer-ssl-termination-proxy.git
