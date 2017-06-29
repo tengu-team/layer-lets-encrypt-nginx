@@ -42,21 +42,22 @@ def signal_need_webservice():
 
 
 @when('ssltermination.connected')
-@when_not('ssltermination.available')
 def check_status(ssltermination):
     ssltermination.check_status()
 
 
 @when('ssl-termination-proxy.installed', 'ssltermination.available')
-@when_not('lets-encrypt.registered')
 def setup_fqdns(ssltermination):
-    data = ssltermination.get_data()[0]
+    data = ssltermination.get_data()
     fqdns = db.get('fqdns')
+    received_fqdns = []
+    for item in data:
+        received_fqdns.extend(item['fqdns'])
     if fqdns is None:
-        db.set('fqdns', data['fqdns'])
-    else:
-        db.set('fqdns', list(set(fqdns) | set(data['fqdns'])))
-    lets_encrypt.update_fqdns()
+        db.set('fqdns', received_fqdns)
+    elif fqdns != received_fqdns:
+        db.set('fqdns', list(set(fqdns) | set(received_fqdns)))
+        lets_encrypt.update_fqdns()
 
 
 @when('ssl-termination-proxy.installed', 'ssltermination.available', 'lets-encrypt.registered')
@@ -75,7 +76,7 @@ def set_up(ssltermination):
             user['name'], user['password']])
     live = lets_encrypt.live(data['fqdns'])
     configure_site(
-        'serivce.conf', '{}.conf'.format(service),
+        '{}.conf'.format(service), 'serivce.conf',
         privkey=live['privkey'],
         fullchain=live['fullchain'],
         loadbalancing=data['loadbalancing'],
