@@ -50,6 +50,7 @@ def check_status(ssltermination):
 
 @when('ssl-termination-proxy.installed', 'ssltermination.available')
 def pre_setup(ssltermination):
+    status_set('maintenance', 'SSL termination relation found, configuring proxy')
     received_fqdns = []
     received_basic_auth = []
     received_private_ips = []
@@ -67,21 +68,28 @@ def pre_setup(ssltermination):
         db.set('fqdns', received_fqdns)
         lets_encrypt.update_fqdns()
         remove_state('ssl-termination-proxy.running')
+    else:
+        status_set('active', '{} have been registered and are online'.format(db.get('fqdns')))
     if basic_auth != received_basic_auth:
         db.set('basic_auth', received_basic_auth)
         remove_state('ssl-termination-proxy.running')
+    else:
+        status_set('active', '{} have been registered and are online'.format(db.get('fqdns')))
     if private_ips != received_private_ips:
         db.set('private_ips', received_private_ips)
         remove_state('ssl-termination-proxy.running')
+    else:
+        status_set('active', '{} have been registered and are online'.format(db.get('fqdns')))
     if loadbalancing != received_loadbalancing:
         db.set('loadbalancing', received_loadbalancing)
         remove_state('ssl-termination-proxy.running')
+    else:
+        status_set('active', '{} have been registered and are online'.format(db.get('fqdns')))
 
 
 @when('ssl-termination-proxy.installed', 'ssltermination.available', 'lets-encrypt.registered')
 @when_not('ssl-termination-proxy.running')
 def setup(ssltermination):
-    print('SSL termination relation found, configuring proxy.')
     live = lets_encrypt.live(db.get('fqdns'))
     for data in ssltermination.get_data():
         service = data['service']
@@ -99,15 +107,17 @@ def setup(ssltermination):
                 check_call([
                     'htpasswd', '-bc', '/etc/nginx/.htpasswd/{}'.format(service),
                     user['name'], user['password']])
-        configure_site(
-            '{}.conf'.format(service), 'service.conf',
-            privkey=live['privkey'],
-            fullchain=live['fullchain'],
-            loadbalancing=data['loadbalancing'],
-            service=service,
-            servers=data['private_ips'],
-            fqdns=data['fqdns'],
-            dhparam=live['dhparam'],
-            auth_basic=bool(data['basic_auth']))
+        configuration = {
+            'privkey': live['privkey'],
+            'fullchain': live['fullchain'],
+            'service': service,
+            'servers': data['private_ips'],
+            'fqdns': data['fqdns'],
+            'dhparam': live['dhparam'],
+            'auth_basic': bool(data['basic_auth'])
+        }
+        if data['loadbalancing']:
+            configuration['loadbalancing'] = data['loadbalancing']
+        configure_site('{}.conf'.format(service), 'service.conf', **configuration)
     set_state('ssl-termination-proxy.running')
     status_set('active', '{} have been registered and are online'.format(db.get('fqdns')))
