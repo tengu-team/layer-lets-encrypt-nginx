@@ -1,0 +1,42 @@
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name {{fqdn}};
+    return 301 https://$server_name$request_uri;
+}
+
+server {
+    listen 443 ssl http2 default_server;
+    listen [::]:443 ssl http2 default_server;
+    ssl_certificate {{fullchain}};
+    ssl_certificate_key {{privkey}};
+    ssl_dhparam {{dhparam}};
+    ssl_protocols TLSv1 TLSv1.1 TLSv1.2;  ## Limits which protocols are used, so unsecure ones can be excluded (for instance, SSLv1, SSLv2)
+    ssl_prefer_server_ciphers on;  ## Specifies that server ciphers should be preferred over client ciphers when using the SSLv3 and TLS protocols.
+    ssl_ciphers "EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH";  ## Specifies the enabled ciphers.
+    ssl_ecdh_curve secp384r1;  ## Type of elliptic curve to use when using elliptic cyphers.
+    ssl_session_timeout 24h;  ## How long before a client renegotiates its session
+    ssl_buffer_size 1400;  ## When handling large files/payloads, this value must be increased, or SSL renegotiation will fail.
+    ssl_session_tickets off;  ## https://github.com/mozilla/server-side-tls/issues/135
+    ssl_stapling on;  ## https://tools.ietf.org/html/rfc4366#section-3.6
+    ssl_stapling_verify on;
+    add_header Strict-Transport-Security max-age=63072000 always;  ## Force HTTPS, helps to protect websites against protocol downgrade attacks and cookie hijacking
+
+    location / {
+        proxy_pass http://{{hostname}}:{{port}};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+
+        {% if auth_basic %}
+        # Don't forward auth to backend service
+        proxy_set_header Authorization "";
+
+        limit_except OPTIONS {
+            auth_basic "Restricted Content";
+            auth_basic_user_file /etc/nginx/.htpasswd;
+        }
+        {% endif %}  # auth_basic
+    }
+}
